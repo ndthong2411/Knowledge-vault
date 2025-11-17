@@ -28,5 +28,12 @@ black==24.1.1
 flake8==7.0.0
 mypy==1.8.0
 
+# Visualization
+plotly==5.18.0
+networkx==3.2.1
+
 # Media (for future Phase 2)
 Pillow==10.2.0
+
+# Additional UI
+streamlit-option-menu==0.3.12

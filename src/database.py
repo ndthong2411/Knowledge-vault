@@ -462,6 +462,344 @@ class Database:
 
         return stats
 
+    # ==================== FOLDERS ====================
+
+    def create_folder(self, name: str, parent_id: int = None, color: str = '#4CAF50', icon: str = '📁') -> int:
+        """Create a new folder"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO folders (name, parent_id, color, icon)
+            VALUES (?, ?, ?, ?)
+        """, (name, parent_id, color, icon))
+
+        conn.commit()
+        return cursor.lastrowid
+
+    def get_all_folders(self) -> List[Dict]:
+        """Get all folders with note counts"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT f.*, COUNT(n.id) as note_count
+            FROM folders f
+            LEFT JOIN notes n ON f.id = n.folder_id
+            GROUP BY f.id
+            ORDER BY f.name
+        """)
+
+        return [dict(row) for row in cursor.fetchall()]
+
+    def move_note_to_folder(self, note_id: int, folder_id: int = None) -> bool:
+        """Move a note to a folder"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("UPDATE notes SET folder_id = ? WHERE id = ?", (folder_id, note_id))
+        conn.commit()
+        return True
+
+    def get_notes_in_folder(self, folder_id: int = None) -> List[Dict]:
+        """Get all notes in a folder (None = no folder)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if folder_id is None:
+            cursor.execute("SELECT * FROM notes WHERE folder_id IS NULL ORDER BY updated_at DESC")
+        else:
+            cursor.execute("SELECT * FROM notes WHERE folder_id = ? ORDER BY updated_at DESC", (folder_id,))
+
+        notes = [dict(row) for row in cursor.fetchall()]
+
+        for note in notes:
+            note['tags'] = self.get_note_tags(note['id'])
+
+        return notes
+
+    def delete_folder(self, folder_id: int) -> bool:
+        """Delete a folder (notes will be moved to no folder)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Move notes to no folder
+        cursor.execute("UPDATE notes SET folder_id = NULL WHERE folder_id = ?", (folder_id,))
+
+        # Delete folder
+        cursor.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+
+        conn.commit()
+        return True
+
+    # ==================== BACKLINKS ====================
+
+    def add_note_link(self, source_note_id: int, target_note_id: int, link_text: str = None) -> bool:
+        """Add a link between notes"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO note_links (source_note_id, target_note_id, link_text)
+                VALUES (?, ?, ?)
+            """, (source_note_id, target_note_id, link_text))
+            conn.commit()
+            return True
+        except:
+            return False
+
+    def get_note_links(self, note_id: int) -> Dict:
+        """Get all links for a note (outgoing and incoming)"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Outgoing links (this note links to others)
+        cursor.execute("""
+            SELECT nl.*, n.title, n.id
+            FROM note_links nl
+            JOIN notes n ON nl.target_note_id = n.id
+            WHERE nl.source_note_id = ?
+        """, (note_id,))
+        outgoing = [dict(row) for row in cursor.fetchall()]
+
+        # Incoming links (backlinks - others link to this note)
+        cursor.execute("""
+            SELECT nl.*, n.title, n.id
+            FROM note_links nl
+            JOIN notes n ON nl.source_note_id = n.id
+            WHERE nl.target_note_id = ?
+        """, (note_id,))
+        incoming = [dict(row) for row in cursor.fetchall()]
+
+        return {
+            'outgoing': outgoing,
+            'incoming': incoming
+        }
+
+    def remove_note_link(self, source_note_id: int, target_note_id: int) -> bool:
+        """Remove a link between notes"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            DELETE FROM note_links WHERE source_note_id = ? AND target_note_id = ?
+        """, (source_note_id, target_note_id))
+
+        conn.commit()
+        return True
+
+    def get_graph_data(self) -> Dict:
+        """Get all notes and links for graph visualization"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Get all notes
+        cursor.execute("SELECT id, title FROM notes")
+        nodes = [{'id': row[0], 'title': row[1]} for row in cursor.fetchall()]
+
+        # Get all links
+        cursor.execute("SELECT source_note_id, target_note_id FROM note_links")
+        links = [{'source': row[0], 'target': row[1]} for row in cursor.fetchall()]
+
+        return {'nodes': nodes, 'links': links}
+
+    # ==================== FAVORITES ====================
+
+    def toggle_favorite(self, note_id: int) -> bool:
+        """Toggle favorite status of a note"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT is_favorite FROM notes WHERE id = ?", (note_id,))
+        row = cursor.fetchone()
+
+        if row is None:
+            return False
+
+        new_status = 0 if row[0] == 1 else 1
+        cursor.execute("UPDATE notes SET is_favorite = ? WHERE id = ?", (new_status, note_id))
+        conn.commit()
+
+        return True
+
+    def get_favorite_notes(self) -> List[Dict]:
+        """Get all favorite notes"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM notes WHERE is_favorite = 1 ORDER BY updated_at DESC")
+        notes = [dict(row) for row in cursor.fetchall()]
+
+        for note in notes:
+            note['tags'] = self.get_note_tags(note['id'])
+
+        return notes
+
+    # ==================== VERSION HISTORY ====================
+
+    def save_version(self, note_id: int, title: str, content: str) -> int:
+        """Save a version of a note"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Get current version number
+        cursor.execute("""
+            SELECT MAX(version_number) FROM note_versions WHERE note_id = ?
+        """, (note_id,))
+        row = cursor.fetchone()
+        next_version = (row[0] or 0) + 1
+
+        # Save version
+        cursor.execute("""
+            INSERT INTO note_versions (note_id, title, content, version_number)
+            VALUES (?, ?, ?, ?)
+        """, (note_id, title, content, next_version))
+
+        conn.commit()
+        return cursor.lastrowid
+
+    def get_note_versions(self, note_id: int) -> List[Dict]:
+        """Get all versions of a note"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM note_versions
+            WHERE note_id = ?
+            ORDER BY version_number DESC
+        """, (note_id,))
+
+        return [dict(row) for row in cursor.fetchall()]
+
+    def restore_version(self, note_id: int, version_id: int) -> bool:
+        """Restore a note to a previous version"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # Get version
+        cursor.execute("SELECT title, content FROM note_versions WHERE id = ?", (version_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return False
+
+        # Update note
+        cursor.execute("""
+            UPDATE notes SET title = ?, content = ?, updated_at = ?
+            WHERE id = ?
+        """, (row[0], row[1], datetime.now(), note_id))
+
+        conn.commit()
+        return True
+
+    # ==================== TEMPLATES ====================
+
+    def get_all_templates(self) -> List[Dict]:
+        """Get all note templates"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM templates ORDER BY name")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_template(self, template_id: int) -> Optional[Dict]:
+        """Get a specific template"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM templates WHERE id = ?", (template_id,))
+        row = cursor.fetchone()
+
+        return dict(row) if row else None
+
+    def create_template(self, name: str, content: str, description: str = None,
+                       tags: str = '', icon: str = '📄') -> int:
+        """Create a new template"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO templates (name, description, content, tags, icon)
+            VALUES (?, ?, ?, ?, ?)
+        """, (name, description, content, tags, icon))
+
+        conn.commit()
+        return cursor.lastrowid
+
+    def delete_template(self, template_id: int) -> bool:
+        """Delete a template"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+        conn.commit()
+
+        return cursor.rowcount > 0
+
+    # ==================== DAILY NOTES ====================
+
+    def get_or_create_daily_note(self, date: str = None) -> Dict:
+        """Get or create daily note for a specific date"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        title = f"Daily Note - {date}"
+
+        # Check if exists
+        cursor.execute("""
+            SELECT * FROM notes WHERE title = ? AND is_daily_note = 1
+        """, (title,))
+        row = cursor.fetchone()
+
+        if row:
+            note = dict(row)
+            note['tags'] = self.get_note_tags(note['id'])
+            return note
+
+        # Create new daily note
+        content = f"""# {title}
+
+## Tasks
+- [ ]
+
+## Notes
+
+
+## Reflections
+
+
+"""
+        file_path = f"data/notes/daily-{date}.md"
+
+        note_id = self.create_note(title, content, file_path, ['daily'])
+
+        # Mark as daily note
+        cursor.execute("UPDATE notes SET is_daily_note = 1 WHERE id = ?", (note_id,))
+        conn.commit()
+
+        return self.get_note(note_id)
+
+    def get_all_daily_notes(self, limit: int = 30) -> List[Dict]:
+        """Get recent daily notes"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM notes WHERE is_daily_note = 1
+            ORDER BY created_at DESC LIMIT ?
+        """, (limit,))
+
+        notes = [dict(row) for row in cursor.fetchall()]
+
+        for note in notes:
+            note['tags'] = self.get_note_tags(note['id'])
+
+        return notes
+
     def close(self):
         """Close database connection"""
         if self.conn:
