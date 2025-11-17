@@ -1,0 +1,21 @@
+# Desktop Pomodoro App Requirements
+# For standalone desktop application
+
+# Core dependencies (from main app)
+sentence-transformers==2.2.2
+yake==0.4.8
+numpy==1.24.3
+python-frontmatter==1.0.0
+markdown==3.4.3
+
+# Desktop-specific dependencies
+plyer==2.1.0          # Cross-platform notifications
+pystray==0.19.5       # System tray support
+Pillow==10.0.0        # Image handling for system tray icon
+
+# Note: tkinter is usually included with Python
+# If tkinter is missing, install it separately:
+# - Ubuntu/Debian: sudo apt-get install python3-tk
+# - Fedora: sudo dnf install python3-tkinter
+# - macOS: included with Python
+# - Windows: included with Python
