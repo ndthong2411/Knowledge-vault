@@ -1,0 +1,37 @@
+name: Deploy Application
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run tests before deploy
+      run: |
+        pytest tests/ -v
+
+    - name: Build Docker image (optional)
+      run: |
+        echo "Docker build can be added here if needed"
+
+    - name: Deploy notification
+      run: |
+        echo "Deployment successful! Add your deployment steps here."
